@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "NodeSeek Check-in Helper",
+  "version": "1.0",
+  "background": {
+    "service_worker": "background.js"
+  },
+  "host_permissions": [
+    "http://127.0.0.1/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.nodeseek.com/*"
+      ],
+      "js": [
+        "main.js"
+      ],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://www.nodeseek.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

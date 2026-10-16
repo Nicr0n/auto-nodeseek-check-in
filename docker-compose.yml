@@ -1,0 +1,15 @@
+services:
+  nodeseek-checkin:
+    build: .
+    container_name: nodeseek-checkin
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    shm_size: 1gb
+    environment:
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me} # 管理页面密码（用户名任意），在 .env 中设置
+      TZ: Asia/Shanghai
+      CHECKIN_TIME: "00:10" # 每日签到时间
+      CHECKIN_JITTER_MINUTES: "30" # 在签到时间后随机延迟 0~30 分钟
+    volumes:
+      - ./data:/data

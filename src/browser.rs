@@ -1,0 +1,94 @@
+//! 启动和关闭 Chromium。
+//!
+//! 不开启调试端口（`--remote-debugging-port` 会导致 Cloudflare 人机验证失败），
+//! 页面上的操作全部由加载的扩展完成，见 `extension/`。
+
+use std::{
+    path::{Path, PathBuf},
+    process::Stdio,
+    time::Duration,
+};
+
+use anyhow::{Context, Result};
+use tokio::{process::Child, time::timeout};
+
+pub const EXTENSION_FILES: [(&str, &str); 4] = [
+    ("manifest.json", include_str!("extension/manifest.json")),
+    ("main.js", include_str!("extension/main.js")),
+    ("background.js", include_str!("extension/background.js")),
+    ("content.js", include_str!("extension/content.js")),
+];
+
+#[derive(Clone, Debug)]
+pub struct ChromeConfig {
+    pub binary: String,
+    pub display: String,
+    pub extension_dir: PathBuf,
+}
+
+/// 把内置扩展写入 `dir`，`api` 为扩展回报结果的本地服务地址。
+pub async fn install_extension(dir: &Path, api: &str) -> Result<()> {
+    tokio::fs::create_dir_all(dir).await?;
+    for (name, content) in EXTENSION_FILES {
+        tokio::fs::write(dir.join(name), content.replace("__API__", api)).await?;
+    }
+    Ok(())
+}
+
+pub struct Chrome {
+    child: Child,
+}
+
+impl Chrome {
+    pub async fn launch(cfg: &ChromeConfig, profile: &Path, url: &str) -> Result<Self> {
+        tokio::fs::create_dir_all(profile).await?;
+        // 容器异常退出后残留的锁文件会让 Chrome 拒绝使用该配置目录
+        for name in ["SingletonLock", "SingletonSocket", "SingletonCookie"] {
+            let _ = tokio::fs::remove_file(profile.join(name)).await;
+        }
+
+        let child = tokio::process::Command::new(&cfg.binary)
+            .arg(format!("--user-data-dir={}", profile.display()))
+            .arg(format!("--load-extension={}", cfg.extension_dir.display()))
+            .args([
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--hide-crash-restore-bubble",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--password-store=basic",
+                "--lang=zh-CN",
+                "--window-position=0,0",
+                "--window-size=1280,800",
+            ])
+            .arg(url)
+            .env("DISPLAY", &cfg.display)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .with_context(|| format!("无法启动浏览器 {}", cfg.binary))?;
+        Ok(Self { child })
+    }
+
+    pub fn is_running(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+
+    /// 发送 SIGTERM 让浏览器正常退出，确保 Cookie 等状态写回磁盘。
+    pub async fn close(mut self) {
+        if let Some(pid) = self.child.id() {
+            let _ = tokio::process::Command::new("kill")
+                .args(["-TERM", &pid.to_string()])
+                .status()
+                .await;
+        }
+        if timeout(Duration::from_secs(15), self.child.wait())
+            .await
+            .is_err()
+        {
+            tracing::warn!("浏览器未能正常退出，强制结束");
+            let _ = self.child.kill().await;
+        }
+    }
+}

@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NodeSeek 签到</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --text: #1f2328; --muted: #656d76; --border: #d8dee4;
+    --accent: #0969da; --ok: #1a7f37; --warn: #9a6700; --err: #cf222e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --card: #161b22; --text: #e6edf3; --muted: #8d96a0; --border: #30363d;
+      --accent: #4493f8; --ok: #3fb950; --warn: #d29922; --err: #f85149;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", "Noto Sans CJK SC", sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 20px; margin: 0; }
+  h2 { font-size: 15px; margin: 0 0 12px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+  .meta { color: var(--muted); }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+  button { font: inherit; padding: 5px 12px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--card); color: var(--text); cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--err); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; white-space: nowrap; }
+  td.actions { white-space: nowrap; }
+  td.actions button { margin: 0 4px 4px 0; }
+  .tag { display: inline-block; padding: 0 8px; border-radius: 10px; font-size: 12px; border: 1px solid currentColor; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .err { color: var(--err); }
+  .small { font-size: 12px; color: var(--muted); }
+  .table-wrap { overflow-x: auto; }
+  #login-frame { width: 100%; aspect-ratio: 16 / 10; border: 1px solid var(--border); border-radius: 6px; background: #000; margin-top: 12px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  dialog { border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--text); width: min(420px, calc(100vw - 32px)); }
+  dialog::backdrop { background: rgba(0,0,0,.4); }
+  label { display: block; margin-bottom: 10px; }
+  label > span { display: block; color: var(--muted); margin-bottom: 4px; }
+  input[type=text], input[type=password], select { width: 100%; font: inherit; padding: 6px 8px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--bg); color: var(--text); }
+  label.check { display: flex; gap: 6px; align-items: center; }
+  #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg);
+    padding: 8px 16px; border-radius: 6px; display: none; max-width: calc(100vw - 32px); }
+</style>
+</head>
+<body>
+<main>
+  <div class="bar">
+    <div>
+      <h1>NodeSeek 自动签到</h1>
+      <div class="meta" id="meta"></div>
+    </div>
+    <div class="row">
+      <button id="btn-add">添加账号</button>
+      <button class="primary" id="btn-all">全部签到</button>
+    </div>
+  </div>
+
+  <section class="card" id="login-card" hidden>
+    <h2 id="login-title"></h2>
+    <div class="small" id="login-desc"></div>
+    <div class="row" style="margin-top:10px">
+      <span id="login-status"></span>
+      <button class="primary" id="btn-finish">完成并保存</button>
+      <button id="btn-cancel">取消</button>
+      <button id="btn-abort">放弃本次签到</button>
+    </div>
+    <iframe id="login-frame" title="远程浏览器"></iframe>
+  </section>
+
+  <section class="card">
+    <h2>账号</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>名称</th><th>登录状态</th><th>自动登录</th><th>模式</th><th>上次签到</th><th>操作</th></tr></thead>
+        <tbody id="accounts"></tbody>
+      </table>
+    </div>
+    <div class="small" id="empty" hidden style="padding-top:12px">还没有账号，点击右上角「添加账号」开始。</div>
+  </section>
+
+  <section class="card">
+    <h2>通知</h2>
+    <form id="settings-form">
+      <label><span>Webhook 地址（签到需要人工验证或签到失败时推送）</span>
+        <input type="text" name="webhook_url" placeholder="https://example.com/webhook" autocomplete="off"></label>
+      <label><span>管理页面访问地址（可选，附在通知中方便直接打开）</span>
+        <input type="text" name="public_url" placeholder="https://checkin.example.com" autocomplete="off"></label>
+      <div class="row">
+        <button class="primary" type="submit">保存</button>
+        <button type="button" id="btn-test">发送测试</button>
+      </div>
+    </form>
+    <details class="small" style="margin-top:12px">
+      <summary>推送内容格式</summary>
+      <p>以 JSON POST 发送，<code>event</code> 为 <code>need_verification</code>（需要人工验证）、<code>checkin_failed</code>（签到失败）或 <code>test</code>：</p>
+      <pre style="white-space:pre-wrap">{"event": "need_verification", "title": "NodeSeek 签到需要人工验证",
+ "text": "完整的通知文本", "account": "账号名称", "message": "详细说明",
+ "url": "管理页面访问地址"}</pre>
+    </details>
+  </section>
+</main>
+
+<dialog id="dlg">
+  <form method="dialog" id="form">
+    <h2 id="dlg-title"></h2>
+    <label><span>名称（仅用于区分）</span><input type="text" name="name" required></label>
+    <label><span>NodeSeek 用户名或邮箱（可选，用于自动登录）</span><input type="text" name="username" autocomplete="off"></label>
+    <label><span id="pw-label">密码（可选）</span><input type="password" name="password" autocomplete="new-password"></label>
+    <label class="check" id="clear-pw-row"><input type="checkbox" name="clear_password"> 清除已保存的密码</label>
+    <label><span>签到模式</span>
+      <select name="random"><option value="true">试试手气（随机鸡腿）</option><option value="false">固定 5 个鸡腿</option></select>
+    </label>
+    <label class="check"><input type="checkbox" name="enabled" checked> 参与每日自动签到</label>
+    <div class="small" style="margin-bottom:12px">密码以明文保存在数据目录中。不填密码时，登录失效后需要手动重新登录。</div>
+    <div class="row" style="justify-content:flex-end">
+      <button value="cancel" formnovalidate>取消</button>
+      <button class="primary" value="save">保存</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast"></div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+let state = null;
+let editing = null;
+let frameFor = null;
+let settingsLoaded = false;
+
+async function api(method, path, body) {
+  const res = await fetch(path, {
+    method,
+    headers: body ? { 'content-type': 'application/json' } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+function toast(msg) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.style.display = 'block';
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => (t.style.display = 'none'), 4000);
+}
+
+async function act(fn, okMsg) {
+  try {
+    await fn();
+    if (okMsg) toast(okMsg);
+  } catch (e) {
+    toast(e.message);
+  }
+  refresh();
+}
+
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+const fmtTime = (iso) => iso ? new Date(iso).toLocaleString('zh-CN', { hour12: false }) : '';
+
+function statusTag(a) {
+  if (a.status === 'logged_in') return `<span class="tag ok">已登录</span><div class="small">${esc(a.nodeseek_user)}</div>`;
+  if (a.status === 'need_login') return '<span class="tag err">需要登录</span>';
+  return '<span class="tag warn">未知</span>';
+}
+
+function render() {
+  const s = state;
+  const meta = [`每日 ${s.checkin_time} 起签到`];
+  if (s.next_run) meta.push(`下次：${fmtTime(s.next_run)}`);
+  if (s.activity) meta.push(`<b>${esc(s.activity)}</b>`);
+  $('#meta').innerHTML = meta.join(' · ');
+  $('#btn-all').disabled = s.busy || !s.accounts.length;
+
+  const login = s.login;
+  const verify = s.verification;
+  const panel = login || verify;
+  $('#login-card').hidden = !panel;
+  if (panel) {
+    const acc = s.accounts.find((a) => a.id === panel.account_id);
+    const name = acc ? acc.name : panel.account_id;
+    const mins = Math.ceil(panel.remaining_secs / 60);
+    $('#btn-finish').hidden = $('#btn-cancel').hidden = !login;
+    $('#btn-abort').hidden = !!login;
+    if (login) {
+      $('#login-title').textContent = `登录：${name}`;
+      $('#login-desc').textContent = '在下方浏览器窗口中完成人机验证并登录（如有两步验证也在这里输入），登录成功后点击「完成并保存」。';
+      $('#login-status').innerHTML = login.logged_in_as
+        ? `<span class="ok">已检测到登录：${esc(login.logged_in_as)}</span>`
+        : `<span class="small">等待登录…（${mins} 分钟后自动关闭）</span>`;
+    } else {
+      $('#login-title').textContent = `签到需要人工验证：${name}`;
+      $('#login-desc').textContent = verify.message;
+      $('#login-status').innerHTML = `<span class="warn">等待验证…（${mins} 分钟后放弃）</span>`;
+    }
+    const key = (login ? 'login:' : 'verify:') + panel.account_id;
+    if (frameFor !== key) {
+      $('#login-frame').src = '/novnc/vnc.html?autoconnect=true&resize=scale&reconnect=true&path=vnc-ws';
+      frameFor = key;
+    }
+  } else if (frameFor) {
+    $('#login-frame').src = 'about:blank';
+    frameFor = null;
+  }
+
+  // 设置表单只在首次加载时填充，避免覆盖正在编辑的内容
+  if (!settingsLoaded) {
+    const f = $('#settings-form');
+    f.webhook_url.value = s.settings.webhook_url;
+    f.public_url.value = s.settings.public_url;
+    settingsLoaded = true;
+  }
+
+  $('#empty').hidden = s.accounts.length > 0;
+  $('#accounts').innerHTML = s.accounts.map((a) => {
+    const last = a.last_checkin
+      ? `<span class="${a.last_checkin.ok ? 'ok' : 'err'}">${esc(a.last_checkin.message)}</span><div class="small">${fmtTime(a.last_checkin.at)}</div>`
+      : '<span class="small">—</span>';
+    const auto = a.username && a.has_password ? esc(a.username) : '<span class="small">未设置</span>';
+    return `<tr>
+      <td>${esc(a.name)}${a.enabled ? '' : ' <span class="tag warn">已停用</span>'}</td>
+      <td>${statusTag(a)}</td>
+      <td>${auto}</td>
+      <td>${a.random ? '试试手气' : '固定 5 个'}</td>
+      <td>${last}</td>
+      <td class="actions">
+        <button data-act="login" data-id="${a.id}" ${s.busy ? 'disabled' : ''}>登录</button>
+        <button data-act="checkin" data-id="${a.id}" ${s.busy ? 'disabled' : ''}>签到</button>
+        <button data-act="edit" data-id="${a.id}">编辑</button>
+        <button data-act="delete" data-id="${a.id}" class="danger" ${s.busy ? 'disabled' : ''}>删除</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+async function refresh() {
+  try {
+    state = await api('GET', '/api/state');
+    render();
+  } catch (e) {
+    $('#meta').textContent = '无法连接服务：' + e.message;
+  }
+}
+
+$('#accounts').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-act]');
+  if (!btn) return;
+  const id = btn.dataset.id;
+  const acc = state.accounts.find((a) => a.id === id);
+  switch (btn.dataset.act) {
+    case 'login':
+      btn.disabled = true;
+      btn.textContent = '启动中…';
+      act(() => api('POST', `/api/accounts/${id}/login`));
+      break;
+    case 'checkin':
+      act(() => api('POST', `/api/accounts/${id}/checkin`), '已开始签到');
+      break;
+    case 'edit':
+      openDialog(acc);
+      break;
+    case 'delete':
+      if (confirm(`删除账号「${acc.name}」及其登录状态？`)) act(() => api('DELETE', `/api/accounts/${id}`), '已删除');
+      break;
+  }
+});
+
+$('#btn-all').onclick = () => act(() => api('POST', '/api/checkin'), '已开始为所有账号签到');
+$('#btn-add').onclick = () => openDialog(null);
+$('#btn-finish').onclick = async (e) => {
+  e.target.disabled = true;
+  e.target.textContent = '校验中…';
+  await act(async () => {
+    const r = await api('POST', '/api/login/finish');
+    toast(`登录已保存：${r.user}`);
+  });
+  e.target.disabled = false;
+  e.target.textContent = '完成并保存';
+};
+$('#btn-cancel').onclick = () => act(() => api('POST', '/api/login/cancel'));
+$('#btn-abort').onclick = () => act(() => api('POST', '/api/verification/abort'), '已放弃本次签到');
+
+function settingsBody() {
+  const f = $('#settings-form');
+  return { webhook_url: f.webhook_url.value, public_url: f.public_url.value };
+}
+$('#settings-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  act(() => api('PUT', '/api/settings', settingsBody()), '通知设置已保存');
+});
+$('#btn-test').onclick = () => act(async () => {
+  await api('PUT', '/api/settings', settingsBody());
+  await api('POST', '/api/settings/test');
+}, '测试通知已发送');
+
+function openDialog(acc) {
+  editing = acc;
+  const f = $('#form');
+  f.reset();
+  $('#dlg-title').textContent = acc ? '编辑账号' : '添加账号';
+  f.name.value = acc?.name ?? '';
+  f.username.value = acc?.username ?? '';
+  f.random.value = String(acc?.random ?? true);
+  f.enabled.checked = acc?.enabled ?? true;
+  $('#pw-label').textContent = acc?.has_password ? '密码（已保存，留空则不修改）' : '密码（可选）';
+  $('#clear-pw-row').hidden = !acc?.has_password;
+  $('#dlg').showModal();
+}
+
+$('#dlg').addEventListener('close', () => {
+  if ($('#dlg').returnValue !== 'save') return;
+  const f = $('#form');
+  const body = {
+    name: f.name.value,
+    username: f.username.value,
+    random: f.random.value === 'true',
+    enabled: f.enabled.checked,
+  };
+  if (f.clear_password.checked) body.password = '';
+  else if (f.password.value) body.password = f.password.value;
+  act(() => editing ? api('PUT', `/api/accounts/${editing.id}`, body) : api('POST', '/api/accounts', body), '已保存');
+});
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>
