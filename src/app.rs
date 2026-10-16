@@ -454,7 +454,9 @@ impl App {
         let (what, action) = r.challenge.describe();
         Some(VerificationView {
             account_id: r.task.account_id.clone(),
-            remaining_secs: VERIFICATION_TIMEOUT.saturating_sub(since.elapsed()).as_secs(),
+            remaining_secs: VERIFICATION_TIMEOUT
+                .saturating_sub(since.elapsed())
+                .as_secs(),
             message: format!("{what}。请在下方浏览器窗口中{action}，通过后签到会自动继续。"),
         })
     }
@@ -477,7 +479,11 @@ impl App {
 
     async fn notify(&self, event: Event, title: &str, account: Option<&str>, message: &str) {
         let settings = self.store.settings().await;
-        if let Err(e) = self.notifier.send(&settings, event, title, account, message).await {
+        if let Err(e) = self
+            .notifier
+            .send(&settings, event, title, account, message)
+            .await
+        {
             tracing::warn!("发送通知失败: {e:#}");
         }
     }
@@ -489,7 +495,13 @@ impl App {
             bail!("请先填写 Webhook 地址");
         }
         self.notifier
-            .send(&settings, Event::Test, "NodeSeek 签到通知测试", None, "收到这条消息说明 Webhook 配置正确。")
+            .send(
+                &settings,
+                Event::Test,
+                "NodeSeek 签到通知测试",
+                None,
+                "收到这条消息说明 Webhook 配置正确。",
+            )
             .await
     }
 

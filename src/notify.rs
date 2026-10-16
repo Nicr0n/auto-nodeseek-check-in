@@ -68,11 +68,24 @@ impl Notifier {
             text.push_str(&format!("\n管理页面：{url}"));
         }
 
-        let payload = Payload { event, title, text, account, message, url };
+        let payload = Payload {
+            event,
+            title,
+            text,
+            account,
+            message,
+            url,
+        };
         let resp = self.client.post(webhook).json(&payload).send().await?;
         if !resp.status().is_success() {
             let status = resp.status();
-            let body: String = resp.text().await.unwrap_or_default().chars().take(200).collect();
+            let body: String = resp
+                .text()
+                .await
+                .unwrap_or_default()
+                .chars()
+                .take(200)
+                .collect();
             bail!("Webhook 返回 HTTP {status}：{body}");
         }
         Ok(())

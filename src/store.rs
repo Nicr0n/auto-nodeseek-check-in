@@ -122,7 +122,11 @@ impl Store {
 
     pub async fn set_settings(&self, new: Settings) -> Result<()> {
         let mut settings = self.settings.lock().await;
-        write_atomic(&self.dir.join("settings.json"), &serde_json::to_vec_pretty(&new)?).await?;
+        write_atomic(
+            &self.dir.join("settings.json"),
+            &serde_json::to_vec_pretty(&new)?,
+        )
+        .await?;
         *settings = new;
         Ok(())
     }
@@ -174,7 +178,11 @@ impl Store {
     }
 
     async fn save(&self, accounts: &[Account]) -> Result<()> {
-        write_atomic(&self.dir.join("accounts.json"), &serde_json::to_vec_pretty(accounts)?).await
+        write_atomic(
+            &self.dir.join("accounts.json"),
+            &serde_json::to_vec_pretty(accounts)?,
+        )
+        .await
     }
 }
 

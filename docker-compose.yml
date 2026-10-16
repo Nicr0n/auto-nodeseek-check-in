@@ -1,5 +1,7 @@
 services:
   nodeseek-checkin:
+    # docker compose pull 使用 CI 发布的镜像；docker compose up -d --build 在本地构建
+    image: ghcr.io/nicr0n/auto-nodeseek-check-in:latest
     build: .
     container_name: nodeseek-checkin
     restart: unless-stopped

@@ -1,0 +1,10 @@
+[Unit]
+Description=Update nodeseek-checkin container from ghcr.io
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+Environment=DEPLOY_DIR=/opt/nodeseek-checkin
+ExecStart=/opt/nodeseek-checkin/update.sh

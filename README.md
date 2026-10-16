@@ -7,10 +7,27 @@ Docker 容器中运行真实的 Chromium 浏览器：通过网页上的远程浏
 ```bash
 # 设置管理页面密码（.env 不会提交到 Git）
 echo 'ADMIN_PASSWORD=你的密码' > .env
-docker compose up -d --build
+docker compose pull      # 使用 CI 发布的镜像 ghcr.io/nicr0n/auto-nodeseek-check-in
+docker compose up -d     # 或 docker compose up -d --build 在本地构建
 ```
 
 打开 `http://<服务器>:8080`，用户名任意，密码为 `ADMIN_PASSWORD`。
+
+## CI/CD
+
+- `.github/workflows/ci.yml`：每次推送和 PR 都会检查格式、运行 clippy、构建镜像。推送到 `main` 时发布 `latest` 和 `sha-<提交>` 标签，推送 `v1.2.3` 这样的标签时另外发布 `1.2.3` 和 `1.2`。
+- `deploy/`：服务器上的自动更新。systemd 定时器每 5 分钟执行一次 `update.sh`，拉取到新镜像就重建容器；浏览器正在签到或登录时跳过，下一轮再试。
+
+在服务器上安装（在仓库目录中以 root 执行，部署目录为 `/opt/nodeseek-checkin`）：
+
+```bash
+mkdir -p /opt/nodeseek-checkin
+cp docker-compose.yml deploy/update.sh /opt/nodeseek-checkin/
+echo 'ADMIN_PASSWORD=你的密码' > /opt/nodeseek-checkin/.env
+cp deploy/nodeseek-checkin-update.service deploy/nodeseek-checkin-update.timer /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now nodeseek-checkin-update.timer
+```
 
 ## 使用
 
