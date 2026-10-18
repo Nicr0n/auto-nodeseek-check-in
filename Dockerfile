@@ -14,7 +14,7 @@ RUN apt-get update \
 FROM debian:trixie-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        chromium xvfb x11vnc fonts-noto-cjk tzdata tini ca-certificates \
+        chromium xvfb x11vnc xdotool fonts-noto-cjk tzdata tini ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -m -u 1000 app \
     && mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix

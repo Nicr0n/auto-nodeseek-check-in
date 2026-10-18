@@ -180,6 +180,7 @@ function render() {
   const s = state;
   const meta = [`每日 ${s.checkin_time} 起签到`];
   if (s.next_run) meta.push(`下次：${fmtTime(s.next_run)}`);
+  if (s.next_browse) meta.push(`下次浏览：${fmtTime(s.next_browse)}`);
   if (s.activity) meta.push(`<b>${esc(s.activity)}</b>`);
   $('#meta').innerHTML = meta.join(' · ');
   $('#btn-all').disabled = s.busy || !s.accounts.length;

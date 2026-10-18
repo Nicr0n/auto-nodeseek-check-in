@@ -1,6 +1,7 @@
 mod app;
 mod browser;
 mod notify;
+mod reading;
 mod store;
 mod web;
 
@@ -53,6 +54,15 @@ async fn main() -> Result<()> {
     let app = Arc::new(App::new(store, chrome));
 
     tokio::spawn(scheduler(app.clone(), time, jitter_minutes));
+    tokio::spawn({
+        let app = app.clone();
+        let path = data_dir.join("reading-schedule.json");
+        async move {
+            if let Err(e) = reading::run(app, &path).await {
+                tracing::error!("日间阅读调度停止：{e:#}");
+            }
+        }
+    });
     tokio::spawn({
         let app = app.clone();
         async move {

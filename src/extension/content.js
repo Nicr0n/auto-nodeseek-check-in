@@ -71,27 +71,38 @@ function onSecurityCheckPage() {
   return /security check/i.test(document.title);
 }
 
-// NodeSeek 页面上的安全检查脚本在页面打开约 10 秒后上报鼠标轨迹，通过后写入 fog Cookie；
-// 没有该 Cookie 时签到接口返回 403 和安全检查页面。
-const FOG_COOKIE_RE = /(?:^|;\s*)fog=[^;]/;
-
-async function waitForFog(ms) {
-  const deadline = Date.now() + ms;
-  while (!FOG_COOKIE_RE.test(document.cookie)) {
-    if (Date.now() > deadline) return false;
-    await sleep(1000);
+async function requestAttendance(task) {
+  const root = document.documentElement;
+  delete root.dataset.nsautoAttendanceResponse;
+  root.dataset.nsautoAttendanceRequest = JSON.stringify({ id: task.id, random: task.random });
+  document.dispatchEvent(new Event('nsauto-attendance-request'));
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    const value = root.dataset.nsautoAttendanceResponse;
+    if (value) {
+      const response = JSON.parse(value);
+      if (response.id === task.id) {
+        if (response.error) throw new Error(response.error);
+        return response;
+      }
+    }
+    await sleep(200);
   }
-  return true;
+  throw new Error('页面签到请求超时');
 }
 
 async function main(task) {
   const report = (data) => send('report', { id: task.id, ...data });
   const user = await readUser();
+  if (task.mode === 'browse' && user === undefined) {
+    await report({ kind: 'result', ok: false, message: '页面被验证拦截，跳过本次日间浏览' });
+    return;
+  }
   if (user === undefined) {
     // 签到时停在需要人工点击的验证上：通知服务端，等待用户通过 VNC 完成。
     // 验证通过后页面会重新加载，本脚本随之重新执行。
     // 无需点击的验证通常几秒内自动通过并跳转（本脚本随之结束），因此稍等再判断。
-    if (task.mode === 'checkin' && onChallengePage()) {
+    if (task.mode === 'checkin' && (onChallengePage() || onSecurityCheckPage())) {
       const security = onSecurityCheckPage();
       await sleep(security ? 60_000 : 10_000);
       await report({ kind: 'challenge', challenge: security ? 'security_check' : 'cloudflare' });
@@ -101,6 +112,15 @@ async function main(task) {
 
   await report({ kind: 'state', user });
   const onSignIn = location.pathname.includes('signIn');
+
+  if (task.mode === 'browse') {
+    if (!user) {
+      await report({ kind: 'result', ok: false, message: '登录已失效，跳过本次日间浏览' });
+      return;
+    }
+    await browsePosts(task, report);
+    return;
+  }
 
   if (task.mode === 'login') {
     // 手动登录：只预填账号密码，由用户完成人机验证并点击登录
@@ -117,26 +137,27 @@ async function main(task) {
       location.href = '/board';
       return;
     }
-    // 安全检查没能自动通过（例如要求有鼠标操作）时交由用户在管理页面处理，
-    // 不伪造鼠标轨迹；通过后 Cookie 出现，签到继续。
-    if (!(await waitForFog(30_000))) {
-      await report({ kind: 'challenge', challenge: 'security_check' });
-      await waitForFog(Infinity);
-    }
+    // 安全脚本会延迟启动；给系统鼠标交互和 Service Worker 留出完成时间。
+    await report({ kind: 'prepare_security_check' });
+    await sleep(20_000);
     try {
-      const r = await fetch(`/api/attendance?random=${task.random}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        credentials: 'same-origin',
-      });
-      const body = await r.text();
-      // 上次留下的 fog Cookie 可能已失效：删除后刷新页面重新检查，每个任务只重试一次
-      const retryKey = `nsauto-fog-retry-${task.id}`;
+      let r = await requestAttendance(task);
+      let body = r.body;
+      // 旧的安全状态可能失效：刷新页面重新检查，每个任务只重试一次。
+      const retryKey = `nsauto-attendance-retry-${task.id}`;
       if (r.status === 403 && /security check/i.test(body) && !sessionStorage.getItem(retryKey)) {
         sessionStorage.setItem(retryKey, '1');
-        document.cookie = 'fog=; expires=Thu, 01 Jan 1970 00:00:01 GMT; path=/';
         location.reload();
         return;
+      }
+      if (r.status === 403 && /security check/i.test(body)) {
+        await report({ kind: 'challenge', challenge: 'security_check' });
+        // 用户操作页面后定期重试；浏览器关闭时脚本随之结束。
+        do {
+          await sleep(15_000);
+          r = await requestAttendance(task);
+          body = r.body;
+        } while (r.status === 403 && /security check/i.test(body));
       }
       await report({ kind: 'attendance', status: r.status, body });
     } catch (e) {

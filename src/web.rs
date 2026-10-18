@@ -144,6 +144,7 @@ async fn index() -> Html<&'static str> {
 async fn state(State(ctx): State<Ctx>) -> ApiResult {
     let accounts: Vec<AccountView> = ctx.app.store.list().await.iter().map(Into::into).collect();
     let next_run = ctx.app.next_run.lock().unwrap().map(|t| t.to_rfc3339());
+    let next_browse = ctx.app.next_browse.lock().unwrap().map(|t| t.to_rfc3339());
     Ok(Json(json!({
         "accounts": accounts,
         "login": ctx.app.login_view().await,
@@ -152,6 +153,7 @@ async fn state(State(ctx): State<Ctx>) -> ApiResult {
         "activity": ctx.app.activity(),
         "busy": ctx.app.is_busy(),
         "next_run": next_run,
+        "next_browse": next_browse,
         "checkin_time": ctx.cfg.checkin_time,
     })))
 }

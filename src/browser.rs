@@ -12,11 +12,12 @@ use std::{
 use anyhow::{Context, Result};
 use tokio::{process::Child, time::timeout};
 
-pub const EXTENSION_FILES: [(&str, &str); 4] = [
+pub const EXTENSION_FILES: [(&str, &str); 5] = [
     ("manifest.json", include_str!("extension/manifest.json")),
     ("main.js", include_str!("extension/main.js")),
     ("background.js", include_str!("extension/background.js")),
     ("content.js", include_str!("extension/content.js")),
+    ("browse.js", include_str!("extension/browse.js")),
 ];
 
 #[derive(Clone, Debug)]
@@ -73,6 +74,67 @@ impl Chrome {
 
     pub fn is_running(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
+    }
+
+    /// 在浏览器内容区域移动系统指针，让页面的交互检查能够运行。
+    /// 不通过 DOM 派发事件，也不点击页面或 Cloudflare 验证控件。
+    pub async fn prepare_security_check(&self, cfg: &ChromeConfig) -> Result<()> {
+        for (x, y) in [(420, 300), (460, 320), (510, 350), (570, 370), (630, 360)] {
+            let status = timeout(
+                Duration::from_secs(3),
+                tokio::process::Command::new("xdotool")
+                    .args(["mousemove", &x.to_string(), &y.to_string()])
+                    .env("DISPLAY", &cfg.display)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .kill_on_drop(true)
+                    .status(),
+            )
+            .await
+            .context("移动浏览器鼠标超时")?
+            .context("无法运行 xdotool，请确认已安装")?;
+            anyhow::ensure!(status.success(), "移动浏览器鼠标失败：{status}");
+            // 检查脚本可能延迟加载，交互覆盖页面打开后的前十余秒。
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        }
+        Ok(())
+    }
+
+    /// 阅读时在内容区域移动指针并滚动，按钮 4/5 是滚轮，不点击页面控件。
+    pub async fn reading_interaction(&self, cfg: &ChromeConfig) -> Result<()> {
+        let x = rand::random_range(350..=900).to_string();
+        let y = rand::random_range(250..=650).to_string();
+        let steps = rand::random_range(1..=3).to_string();
+        let wheel = if rand::random_range(0..5) == 0 {
+            "4"
+        } else {
+            "5"
+        };
+        let status = timeout(
+            Duration::from_secs(3),
+            tokio::process::Command::new("xdotool")
+                .args([
+                    "mousemove",
+                    &x,
+                    &y,
+                    "click",
+                    "--repeat",
+                    &steps,
+                    "--delay",
+                    "150",
+                    wheel,
+                ])
+                .env("DISPLAY", &cfg.display)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .kill_on_drop(true)
+                .status(),
+        )
+        .await
+        .context("阅读时鼠标操作超时")?
+        .context("无法运行 xdotool")?;
+        anyhow::ensure!(status.success(), "阅读时鼠标操作失败：{status}");
+        Ok(())
     }
 
     /// 发送 SIGTERM 让浏览器正常退出，确保 Cookie 等状态写回磁盘。

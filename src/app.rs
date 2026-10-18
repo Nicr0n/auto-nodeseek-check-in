@@ -37,6 +37,8 @@ pub enum TaskMode {
     Checkin,
     /// 手动登录：只预填账号密码
     Login,
+    /// 日间浏览帖子，不执行签到。
+    Browse,
 }
 
 /// 下发给浏览器扩展的任务
@@ -49,6 +51,8 @@ pub struct Task {
     random: bool,
     username: String,
     password: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    browse_until_ms: Option<i64>,
 }
 
 /// 扩展汇报的内容
@@ -70,6 +74,14 @@ pub enum Report {
         message: String,
         #[serde(default)]
         need_login: bool,
+    },
+    /// 正常页面请求系统鼠标交互，以启动 NodeSeek 的后台安全检查。
+    PrepareSecurityCheck {
+        id: String,
+    },
+    BrowseProgress {
+        id: String,
+        path: String,
     },
     /// 页面停在需要人工处理的验证上
     Challenge {
@@ -118,6 +130,10 @@ struct Running {
     challenge_since: Option<Instant>,
     /// 最近一次汇报的验证类型
     challenge: ChallengeKind,
+    security_check_pending: bool,
+    security_check_attempts: u8,
+    browse_pages: usize,
+    browse_ready: bool,
 }
 
 pub struct App {
@@ -130,6 +146,7 @@ pub struct App {
     login: Mutex<Option<LoginSession>>,
     activity: StdMutex<Option<String>>,
     pub next_run: StdMutex<Option<DateTime<Local>>>,
+    pub next_browse: StdMutex<Option<DateTime<Local>>>,
 }
 
 struct LoginSession {
@@ -166,6 +183,7 @@ impl App {
             login: Mutex::new(None),
             activity: StdMutex::new(None),
             next_run: StdMutex::new(None),
+            next_browse: StdMutex::new(None),
         }
     }
 
@@ -198,6 +216,7 @@ impl App {
             random: account.random,
             username: account.username.clone(),
             password: account.password.clone(),
+            browse_until_ms: None,
         };
         *self.running.lock().unwrap() = Some(Running {
             task,
@@ -205,6 +224,10 @@ impl App {
             outcome: None,
             challenge_since: None,
             challenge: ChallengeKind::default(),
+            security_check_pending: false,
+            security_check_attempts: 0,
+            browse_pages: 0,
+            browse_ready: false,
         });
     }
 
@@ -228,12 +251,29 @@ impl App {
             Report::State { id, .. }
             | Report::Attendance { id, .. }
             | Report::Result { id, .. }
+            | Report::PrepareSecurityCheck { id }
+            | Report::BrowseProgress { id, .. }
             | Report::Challenge { id, .. } => id,
         };
         if *id != r.task.id || r.outcome.is_some() {
             return;
         }
         match report {
+            Report::BrowseProgress { path, .. } => {
+                if matches!(r.task.mode, TaskMode::Browse) {
+                    r.browse_ready = true;
+                    if path.starts_with("/post-") {
+                        r.browse_pages += 1;
+                    }
+                    tracing::info!("日间浏览页面：{path}");
+                }
+            }
+            Report::PrepareSecurityCheck { .. } => {
+                // 页面刷新后允许再试；限制次数，避免失效页面反复请求交互。
+                if matches!(r.task.mode, TaskMode::Checkin) && r.security_check_attempts < 3 {
+                    r.security_check_pending = true;
+                }
+            }
             Report::State { user, .. } => r.user = Some(user),
             Report::Challenge { challenge, .. } => {
                 r.challenge = challenge;
@@ -273,6 +313,86 @@ impl App {
             .unwrap()
             .as_ref()
             .and_then(|r| r.user.clone().flatten())
+    }
+
+    // ---------- 日间浏览 ----------
+
+    /// 等浏览器空闲后浏览一个账号；窗口剩余时间不足时跳过，避免在 21 点后阅读。
+    pub async fn browse_account(&self, id: &str, duration: Duration, window_end: DateTime<Local>) {
+        let available = (window_end - Local::now()).to_std().unwrap_or_default();
+        let Some(wait) = available.checked_sub(duration) else {
+            tracing::info!("日间浏览窗口剩余时间不足，跳过账号 {id}");
+            return;
+        };
+        let Ok(_guard) = tokio::time::timeout(wait, self.browser_lock.lock()).await else {
+            tracing::info!("浏览器繁忙，日间浏览已超出时间窗口，跳过账号 {id}");
+            return;
+        };
+        let Some(account) = self.store.get(id).await.filter(|a| a.enabled) else {
+            return;
+        };
+        if (window_end - Local::now()).to_std().unwrap_or_default() < duration {
+            return;
+        }
+        self.set_activity(Some(format!("正在浏览帖子：{}", account.name)));
+        let result = self.run_browse(&account, duration).await;
+        self.set_activity(None);
+        match result {
+            Ok(pages) => tracing::info!("[{}] 日间浏览结束，阅读 {pages} 个帖子", account.name),
+            Err(e) => tracing::warn!("[{}] 日间浏览未完成：{e:#}", account.name),
+        }
+    }
+
+    async fn run_browse(&self, account: &Account, duration: Duration) -> Result<usize> {
+        self.begin_task(account, TaskMode::Browse);
+        let started = Instant::now();
+        if let Some(r) = self.running.lock().unwrap().as_mut() {
+            r.task.browse_until_ms =
+                Some(Local::now().timestamp_millis() + duration.as_millis() as i64);
+        }
+        let profile = self.store.profile_dir(&account.id);
+        let mut chrome = match Chrome::launch(&self.chrome, &profile, &format!("{BASE}/")).await {
+            Ok(c) => c,
+            Err(e) => {
+                self.end_task();
+                return Err(e);
+            }
+        };
+        let mut next_interaction = Instant::now();
+        let result = loop {
+            let (outcome, ready, pages) = {
+                let running = self.running.lock().unwrap();
+                let r = running.as_ref().unwrap();
+                (r.outcome.clone(), r.browse_ready, r.browse_pages)
+            };
+            if let Some(o) = outcome {
+                break if o.ok && pages > 0 {
+                    Ok(pages)
+                } else {
+                    Err(anyhow!("{}", o.message))
+                };
+            }
+            if !chrome.is_running() {
+                break Err(anyhow!("浏览器意外退出"));
+            }
+            if started.elapsed() >= duration {
+                break if pages > 0 {
+                    Ok(pages)
+                } else {
+                    Err(anyhow!("浏览超时，未能打开帖子"))
+                };
+            }
+            if ready && Instant::now() >= next_interaction {
+                if let Err(e) = chrome.reading_interaction(&self.chrome).await {
+                    break Err(e);
+                }
+                next_interaction = Instant::now() + Duration::from_secs(rand::random_range(5..=12));
+            }
+            sleep(Duration::from_millis(500)).await;
+        };
+        chrome.close().await;
+        self.end_task();
+        result
     }
 
     // ---------- 签到 ----------
@@ -371,13 +491,22 @@ impl App {
         let started = Instant::now();
         let mut notified = false;
         let outcome = loop {
-            let (outcome, challenge_since, challenge) = {
-                let running = self.running.lock().unwrap();
+            let (outcome, challenge_since, challenge, prepare_security_check) = {
+                let mut running = self.running.lock().unwrap();
+                let prepare = running.as_mut().is_some_and(|r| {
+                    if !r.security_check_pending {
+                        return false;
+                    }
+                    r.security_check_pending = false;
+                    r.security_check_attempts += 1;
+                    true
+                });
                 let r = running.as_ref();
                 (
                     r.and_then(|r| r.outcome.clone()),
                     r.and_then(|r| r.challenge_since),
                     r.map(|r| r.challenge).unwrap_or_default(),
+                    prepare,
                 )
             };
             if let Some(o) = outcome {
@@ -385,6 +514,12 @@ impl App {
             }
             if !chrome.is_running() {
                 break Err(anyhow!("浏览器意外退出"));
+            }
+            if prepare_security_check
+                && let Err(e) = chrome.prepare_security_check(&self.chrome).await
+            {
+                // 缺少桌面工具时仍可通过远程浏览器手动完成，不终止签到。
+                tracing::warn!("[{}] 自动准备安全检查失败：{e:#}", account.name);
             }
 
             // 遇到需要人工处理的验证：通知用户，并延长等待时间
@@ -634,5 +769,102 @@ fn parse_attendance(status: u16, body: &str) -> Result<String, String> {
         Ok(format!("今日已签到：{}", resp.message))
     } else {
         Err(format!("签到失败（HTTP {status}）：{}", resp.message))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn security_check_interaction_is_scoped_to_active_checkin() {
+        let dir = std::env::temp_dir().join(format!("nsauto-test-{:016x}", rand::random::<u64>()));
+        let app = App::new(
+            Store::open(&dir).await.unwrap(),
+            ChromeConfig {
+                binary: "chromium".into(),
+                display: ":99".into(),
+                extension_dir: dir.join("extension"),
+            },
+        );
+        let account = Account {
+            id: "account".into(),
+            name: "test".into(),
+            username: String::new(),
+            password: String::new(),
+            random: true,
+            enabled: true,
+            status: LoginStatus::Unknown,
+            nodeseek_user: None,
+            last_checkin: None,
+        };
+        for mode in [TaskMode::Login, TaskMode::Checkin, TaskMode::Browse] {
+            app.begin_task(&account, mode);
+            let id = app.current_task().unwrap().id;
+            let report = |id: &str| {
+                serde_json::from_value(serde_json::json!({
+                    "kind": "prepare_security_check", "id": id,
+                }))
+                .unwrap()
+            };
+
+            app.handle_report(report("old-task"));
+            assert!(
+                !app.running
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .security_check_pending
+            );
+
+            app.handle_report(report(&id));
+            {
+                let mut running = app.running.lock().unwrap();
+                let r = running.as_mut().unwrap();
+                assert_eq!(r.security_check_pending, matches!(mode, TaskMode::Checkin));
+                r.security_check_pending = false;
+                r.security_check_attempts = 3;
+            }
+            app.handle_report(report(&id));
+            assert!(
+                !app.running
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .security_check_pending
+            );
+        }
+        tokio::fs::remove_dir_all(dir).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn browsing_skips_when_browser_is_busy_or_window_is_too_short() {
+        let dir =
+            std::env::temp_dir().join(format!("nsauto-reading-{:016x}", rand::random::<u64>()));
+        let app = App::new(
+            Store::open(&dir).await.unwrap(),
+            ChromeConfig {
+                binary: "must-not-launch".into(),
+                display: ":99".into(),
+                extension_dir: dir.join("extension"),
+            },
+        );
+        let guard = app.browser_lock.lock().await;
+        let duration = Duration::from_secs(120);
+        app.browse_account(
+            "account",
+            duration,
+            Local::now() + chrono::TimeDelta::milliseconds(120_030),
+        )
+        .await;
+        assert!(app.current_task().is_none());
+        assert!(app.activity().is_none());
+        drop(guard);
+        app.browse_account("account", duration, Local::now()).await;
+        assert!(app.current_task().is_none());
+        assert!(!app.is_busy());
+        tokio::fs::remove_dir_all(dir).await.unwrap();
     }
 }

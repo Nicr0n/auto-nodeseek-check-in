@@ -29,6 +29,8 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - name: 检查扩展脚本语法
         run: for f in src/extension/*.js; do node --check "$f"; done
+      - name: 测试签到扩展
+        run: node --test tests/*.test.cjs
 
   image:
     needs: check

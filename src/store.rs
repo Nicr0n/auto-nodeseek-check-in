@@ -186,7 +186,7 @@ impl Store {
     }
 }
 
-async fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
+pub(crate) async fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
     let tmp = path.with_extension("json.tmp");
     tokio::fs::write(&tmp, data).await?;
     tokio::fs::rename(&tmp, path).await?;
