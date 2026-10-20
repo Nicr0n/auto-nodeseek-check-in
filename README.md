@@ -5,13 +5,11 @@ Docker 容器中运行真实的 Chromium 浏览器：通过网页上的远程浏
 ## 启动
 
 ```bash
-# 设置管理页面密码（.env 不会提交到 Git）
-echo 'ADMIN_PASSWORD=你的密码' > .env
 docker compose pull      # 使用 CI 发布的镜像 ghcr.io/nicr0n/auto-nodeseek-check-in
 docker compose up -d     # 或 docker compose up -d --build 在本地构建
 ```
 
-打开 `http://<服务器>:8080`，用户名任意，密码为 `ADMIN_PASSWORD`。
+打开 `http://<服务器>:8080`。管理页面本身没有认证，请通过 Cloudflare Tunnel + Access 等方式控制访问，不要直接暴露到公网。
 
 ## CI/CD
 
@@ -23,7 +21,6 @@ docker compose up -d     # 或 docker compose up -d --build 在本地构建
 ```bash
 mkdir -p /opt/nodeseek-checkin
 cp docker-compose.yml deploy/update.sh /opt/nodeseek-checkin/
-echo 'ADMIN_PASSWORD=你的密码' > /opt/nodeseek-checkin/.env
 cp deploy/nodeseek-checkin-update.service deploy/nodeseek-checkin-update.timer /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now nodeseek-checkin-update.timer
@@ -78,7 +75,6 @@ Webhook 以 JSON POST 发送：
 
 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `ADMIN_PASSWORD` | 无 | 管理页面密码。不设置则无需密码，**不要这样暴露到公网** |
 | `CHECKIN_TIME` | `00:10` | 每日签到时间（`TZ` 时区） |
 | `CHECKIN_JITTER_MINUTES` | `30` | 随机延迟的最大分钟数 |
 | `TZ` | `Asia/Shanghai` | 时区 |
@@ -89,5 +85,5 @@ Webhook 以 JSON POST 发送：
 
 ## 注意
 
-- 管理页面使用 HTTP Basic 认证，暴露到公网时请放在 HTTPS 反向代理之后。
+- 管理页面没有内置认证，访问控制交给 Cloudflare Access（或其他反向代理）。
 - 同一时间只运行一个浏览器：登录窗口打开期间签到会排队，登录窗口 20 分钟未完成会自动关闭。

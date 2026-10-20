@@ -10,12 +10,11 @@ use axum::{
         ConnectInfo, Path, Request, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    http::{HeaderMap, StatusCode, header},
+    http::StatusCode,
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
-use base64::{Engine, engine::general_purpose::STANDARD};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -31,7 +30,6 @@ use crate::{
 };
 
 pub struct WebConfig {
-    pub admin_password: Option<String>,
     pub vnc_addr: String,
     pub novnc_dir: String,
     pub checkin_time: String,
@@ -71,7 +69,7 @@ pub fn router(app: Arc<App>, cfg: WebConfig) -> Router {
         .route("/vnc-ws", get(vnc_ws))
         .route("/novnc/vnc-ws", get(vnc_ws))
         .nest_service("/novnc", novnc)
-        .layer(middleware::from_fn_with_state(ctx.clone(), auth))
+        .layer(middleware::from_fn(internal_only))
         .with_state(ctx)
 }
 
@@ -99,42 +97,16 @@ fn ok() -> ApiResult {
     Ok(Json(json!({ "ok": true })))
 }
 
-async fn auth(
-    State(ctx): State<Ctx>,
+/// 浏览器扩展使用的内部接口只允许容器内部访问；管理页面的访问控制交给前面的 cloudflared
+async fn internal_only(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     req: Request,
     next: Next,
 ) -> Response {
-    // 浏览器扩展使用的内部接口：只允许容器内部访问，不需要密码
-    if req.uri().path().starts_with("/internal/") {
-        return if peer.ip().is_loopback() {
-            next.run(req).await
-        } else {
-            StatusCode::FORBIDDEN.into_response()
-        };
+    if req.uri().path().starts_with("/internal/") && !peer.ip().is_loopback() {
+        return StatusCode::FORBIDDEN.into_response();
     }
-    let Some(expected) = &ctx.cfg.admin_password else {
-        return next.run(req).await;
-    };
-    let authorized = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Basic "))
-        .and_then(|v| STANDARD.decode(v).ok())
-        .and_then(|v| String::from_utf8(v).ok())
-        .and_then(|v| v.split_once(':').map(|(_, pass)| pass == expected))
-        .unwrap_or(false);
-    if authorized {
-        next.run(req).await
-    } else {
-        (
-            StatusCode::UNAUTHORIZED,
-            [(header::WWW_AUTHENTICATE, "Basic realm=\"nodeseek-checkin\"")],
-            "需要登录",
-        )
-            .into_response()
-    }
+    next.run(req).await
 }
 
 async fn index() -> Html<&'static str> {

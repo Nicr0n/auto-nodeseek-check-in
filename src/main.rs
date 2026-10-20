@@ -35,10 +35,6 @@ async fn main() -> Result<()> {
     let jitter_minutes: u32 = env_or("CHECKIN_JITTER_MINUTES", "30")
         .parse()
         .context("CHECKIN_JITTER_MINUTES 应为整数")?;
-    let admin_password = env::var("ADMIN_PASSWORD").ok().filter(|v| !v.is_empty());
-    if admin_password.is_none() {
-        tracing::warn!("未设置 ADMIN_PASSWORD，管理页面无需密码即可访问");
-    }
 
     let listener = tokio::net::TcpListener::bind(&listen).await?;
     let port = listener.local_addr()?.port();
@@ -76,7 +72,6 @@ async fn main() -> Result<()> {
     let router = web::router(
         app,
         WebConfig {
-            admin_password,
             vnc_addr: env_or("VNC_ADDR", "127.0.0.1:5900"),
             novnc_dir: env_or("NOVNC_DIR", "/opt/novnc"),
             checkin_time,
