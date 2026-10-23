@@ -18,7 +18,7 @@ use tokio::{
 
 use crate::{
     browser::{Chrome, ChromeConfig},
-    notify::{Event, Notifier},
+    notify::{Event, Notification, Notifier},
     store::{Account, CheckinRecord, LoginStatus, Store},
 };
 
@@ -119,6 +119,14 @@ struct Outcome {
     ok: bool,
     message: String,
     need_login: bool,
+    /// 本次签到获得的鸡腿；今日已签到或签到失败时为 None
+    reward: Option<Reward>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Reward {
+    gain: Option<i64>,
+    current: Option<i64>,
 }
 
 struct Running {
@@ -282,14 +290,15 @@ impl App {
                 }
             }
             Report::Attendance { status, body, .. } => {
-                let (ok, message) = match parse_attendance(status, &body) {
-                    Ok(m) => (true, m),
-                    Err(m) => (false, m),
+                let (ok, message, reward) = match parse_attendance(status, &body) {
+                    Ok((m, reward)) => (true, m, reward),
+                    Err(m) => (false, m, None),
                 };
                 r.outcome = Some(Outcome {
                     ok,
                     message,
                     need_login: false,
+                    reward,
                 });
             }
             Report::Result {
@@ -302,6 +311,7 @@ impl App {
                     ok,
                     message,
                     need_login,
+                    reward: None,
                 });
             }
         }
@@ -339,7 +349,15 @@ impl App {
         self.set_activity(None);
         match result {
             Ok(pages) => tracing::info!("[{}] 日间浏览结束，阅读 {pages} 个帖子", account.name),
-            Err(e) => tracing::warn!("[{}] 日间浏览未完成：{e:#}", account.name),
+            Err(e) => {
+                tracing::warn!("[{}] 日间浏览未完成：{e:#}", account.name);
+                self.notify(
+                    Notification::new(Event::BrowseFailed, format!("{e:#}"))
+                        .field("账号", &account.name)
+                        .field("NodeSeek 用户", account.nodeseek_user.unwrap_or_default()),
+                )
+                .await;
+            }
         }
     }
 
@@ -447,6 +465,7 @@ impl App {
                 ok: false,
                 message: format!("{e:#}"),
                 need_login: false,
+                reward: None,
             },
         };
         self.set_activity(None);
@@ -456,24 +475,29 @@ impl App {
         } else {
             tracing::warn!("[{}] {}", account.name, outcome.message);
         }
-        if !outcome.ok {
-            self.notify(
-                Event::CheckinFailed,
-                "NodeSeek 签到失败",
-                Some(&account.name),
-                &outcome.message,
-            )
-            .await;
-        }
         let record = CheckinRecord {
             at: Local::now().to_rfc3339(),
             ok: outcome.ok,
-            message: outcome.message,
+            message: outcome.message.clone(),
         };
         let _ = self
             .store
             .update(id, |a| a.last_checkin = Some(record))
             .await;
+
+        // 签到过程中会更新 NodeSeek 用户名，重新读取
+        let user = self
+            .store
+            .get(id)
+            .await
+            .and_then(|a| a.nodeseek_user)
+            .or_else(|| account.nodeseek_user.clone());
+        self.notify(checkin_notification(
+            &account,
+            user.unwrap_or_default(),
+            &outcome,
+        ))
+        .await;
     }
 
     async fn run_check_in(&self, account: &Account) -> Result<Outcome> {
@@ -530,12 +554,17 @@ impl App {
                         self.set_activity(Some(format!("等待人工验证：{}", account.name)));
                         let (what, action) = challenge.describe();
                         self.notify(
-                            Event::NeedVerification,
-                            "NodeSeek 签到需要人工验证",
-                            Some(&account.name),
-                            &format!(
-                                "{what}，请在 {} 分钟内打开管理页面，在浏览器窗口中{action}，通过后签到会自动继续。",
-                                VERIFICATION_TIMEOUT.as_secs() / 60
+                            Notification::new(
+                                Event::NeedVerification,
+                                format!(
+                                    "{what}，请在 {} 分钟内打开管理页面，在浏览器窗口中{action}，通过后签到会自动继续。",
+                                    VERIFICATION_TIMEOUT.as_secs() / 60
+                                ),
+                            )
+                            .field("账号", &account.name)
+                            .field(
+                                "NodeSeek 用户",
+                                account.nodeseek_user.clone().unwrap_or_default(),
                             ),
                         )
                         .await;
@@ -605,6 +634,7 @@ impl App {
                     ok: false,
                     message: "未完成人工验证，已放弃本次签到".into(),
                     need_login: false,
+                    reward: None,
                 });
                 Ok(())
             }
@@ -612,13 +642,9 @@ impl App {
         }
     }
 
-    async fn notify(&self, event: Event, title: &str, account: Option<&str>, message: &str) {
+    pub async fn notify(&self, n: Notification) {
         let settings = self.store.settings().await;
-        if let Err(e) = self
-            .notifier
-            .send(&settings, event, title, account, message)
-            .await
-        {
+        if let Err(e) = self.notifier.send(&settings, &n).await {
             tracing::warn!("发送通知失败: {e:#}");
         }
     }
@@ -626,18 +652,11 @@ impl App {
     /// 发送测试通知，返回错误以便在页面上显示。
     pub async fn notify_test(&self) -> Result<()> {
         let settings = self.store.settings().await;
-        if settings.webhook_url.trim().is_empty() {
-            bail!("请先填写 Webhook 地址");
+        if settings.discord_webhook_url.trim().is_empty() {
+            bail!("请先填写 Discord Webhook 地址");
         }
-        self.notifier
-            .send(
-                &settings,
-                Event::Test,
-                "NodeSeek 签到通知测试",
-                None,
-                "收到这条消息说明 Webhook 配置正确。",
-            )
-            .await
+        let n = Notification::new(Event::Test, "收到这条消息说明 Discord Webhook 配置正确。");
+        self.notifier.send(&settings, &n).await
     }
 
     async fn set_status(&self, id: &str, status: LoginStatus, user: Option<String>) {
@@ -739,8 +758,39 @@ impl App {
     }
 }
 
-/// 解析签到接口的响应。
-fn parse_attendance(status: u16, body: &str) -> Result<String, String> {
+/// 签到结果的通知：成功时列出获得的鸡腿，失败时附带原因。
+fn checkin_notification(account: &Account, user: String, o: &Outcome) -> Notification {
+    let event = match (o.ok, o.reward) {
+        (true, Some(_)) => Event::CheckinSuccess,
+        (true, None) => Event::AlreadyCheckedIn,
+        (false, _) if o.need_login => Event::LoginExpired,
+        (false, _) => Event::CheckinFailed,
+    };
+    // 成功时信息都在字段里，不再重复正文
+    let message = if o.reward.is_some() { "" } else { &o.message };
+    let n = Notification::new(event, message)
+        .field("账号", &account.name)
+        .field("NodeSeek 用户", user);
+    match o.reward {
+        Some(r) => {
+            let count = |v: Option<i64>| v.map_or_else(|| "?".into(), |v| v.to_string());
+            n.field(
+                "签到模式",
+                if account.random {
+                    "试试手气"
+                } else {
+                    "固定 5 个"
+                },
+            )
+            .field("获得鸡腿", count(r.gain))
+            .field("当前鸡腿", count(r.current))
+        }
+        None => n,
+    }
+}
+
+/// 解析签到接口的响应。签到成功时附带获得的鸡腿，今日已签到时为 None。
+fn parse_attendance(status: u16, body: &str) -> Result<(String, Option<Reward>), String> {
     #[derive(Deserialize)]
     struct Resp {
         #[serde(default)]
@@ -760,13 +810,18 @@ fn parse_attendance(status: u16, body: &str) -> Result<String, String> {
     };
     if resp.success {
         let n = |v: Option<i64>| v.map_or_else(|| "?".into(), |v| v.to_string());
-        Ok(format!(
+        let message = format!(
             "签到成功，获得 {} 个鸡腿，当前共 {} 个",
             n(resp.gain),
             n(resp.current)
-        ))
+        );
+        let reward = Reward {
+            gain: resp.gain,
+            current: resp.current,
+        };
+        Ok((message, Some(reward)))
     } else if resp.message.contains("已完成签到") || resp.message.contains("重复") {
-        Ok(format!("今日已签到：{}", resp.message))
+        Ok((format!("今日已签到：{}", resp.message), None))
     } else {
         Err(format!("签到失败（HTTP {status}）：{}", resp.message))
     }
@@ -775,6 +830,73 @@ fn parse_attendance(status: u16, body: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attendance_reward_is_reported_in_notification() {
+        let account = Account {
+            id: "account".into(),
+            name: "main".into(),
+            username: String::new(),
+            password: String::new(),
+            random: true,
+            enabled: true,
+            status: LoginStatus::LoggedIn,
+            nodeseek_user: None,
+            last_checkin: None,
+        };
+        let outcome = |status, body: &str| {
+            let (ok, message, reward) = match parse_attendance(status, body) {
+                Ok((m, r)) => (true, m, r),
+                Err(m) => (false, m, None),
+            };
+            Outcome {
+                ok,
+                message,
+                need_login: false,
+                reward,
+            }
+        };
+
+        let o = outcome(
+            200,
+            r#"{"success":true,"message":"签到收益 7 个鸡腿","gain":7,"current":1234}"#,
+        );
+        let n = checkin_notification(&account, "alice".into(), &o);
+        assert_eq!(n.event, Event::CheckinSuccess);
+        assert!(n.message.is_empty());
+        assert_eq!(
+            n.fields,
+            [
+                ("账号", "main".to_string()),
+                ("NodeSeek 用户", "alice".into()),
+                ("签到模式", "试试手气".into()),
+                ("获得鸡腿", "7".into()),
+                ("当前鸡腿", "1234".into()),
+            ]
+        );
+
+        let o = outcome(
+            500,
+            r#"{"success":false,"message":"今天已完成签到，请勿重复操作"}"#,
+        );
+        let n = checkin_notification(&account, String::new(), &o);
+        assert_eq!(n.event, Event::AlreadyCheckedIn);
+        assert_eq!(n.fields, [("账号", "main".to_string())]);
+
+        let o = outcome(403, "Blocked by security check");
+        assert_eq!(
+            checkin_notification(&account, String::new(), &o).event,
+            Event::CheckinFailed
+        );
+        let o = Outcome {
+            need_login: true,
+            ..outcome(403, "")
+        };
+        assert_eq!(
+            checkin_notification(&account, String::new(), &o).event,
+            Event::LoginExpired
+        );
+    }
 
     #[tokio::test]
     async fn security_check_interaction_is_scoped_to_active_checkin() {

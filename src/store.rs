@@ -81,9 +81,9 @@ impl From<&Account> for AccountView {
 /// 全局设置，持久化到 `<data>/settings.json`。
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Settings {
-    /// 需要手动操作或签到失败时推送通知的 Webhook 地址
+    /// 推送签到结果和错误的 Discord Webhook 地址
     #[serde(default)]
-    pub webhook_url: String,
+    pub discord_webhook_url: String,
     /// 管理页面的访问地址，用于通知中的链接
     #[serde(default)]
     pub public_url: String,

@@ -26,6 +26,7 @@ use tower_http::services::ServeDir;
 
 use crate::{
     app::{App, Report},
+    notify,
     store::{Account, AccountView, LoginStatus, Settings},
 };
 
@@ -241,15 +242,23 @@ async fn abort_verification(State(ctx): State<Ctx>) -> ApiResult {
 }
 
 async fn update_settings(State(ctx): State<Ctx>, Json(input): Json<Settings>) -> ApiResult {
-    let webhook = input.webhook_url.trim();
-    if !webhook.is_empty() && !webhook.starts_with("http://") && !webhook.starts_with("https://") {
-        return Err(anyhow!("Webhook 地址需要以 http:// 或 https:// 开头").into());
+    let webhook = input.discord_webhook_url.trim();
+    if !webhook.is_empty() {
+        notify::check_webhook_url(webhook)?;
+    }
+    // 通知中用作链接，Discord 不接受格式不对的地址
+    let public_url = input.public_url.trim();
+    if !public_url.is_empty()
+        && !public_url.starts_with("http://")
+        && !public_url.starts_with("https://")
+    {
+        return Err(anyhow!("管理页面地址需要以 http:// 或 https:// 开头").into());
     }
     ctx.app
         .store
         .set_settings(Settings {
-            webhook_url: webhook.to_string(),
-            public_url: input.public_url.trim().to_string(),
+            discord_webhook_url: webhook.to_string(),
+            public_url: public_url.to_string(),
         })
         .await?;
     ok()

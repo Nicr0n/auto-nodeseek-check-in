@@ -89,10 +89,10 @@
   </section>
 
   <section class="card">
-    <h2>通知</h2>
+    <h2>Discord 通知</h2>
     <form id="settings-form">
-      <label><span>Webhook 地址（签到需要人工验证或签到失败时推送）</span>
-        <input type="text" name="webhook_url" placeholder="https://example.com/webhook" autocomplete="off"></label>
+      <label><span>Discord Webhook 地址（频道设置 → 整合 → Webhook → 复制 Webhook URL）</span>
+        <input type="text" name="discord_webhook_url" placeholder="https://discord.com/api/webhooks/…" autocomplete="off"></label>
       <label><span>管理页面访问地址（可选，附在通知中方便直接打开）</span>
         <input type="text" name="public_url" placeholder="https://checkin.example.com" autocomplete="off"></label>
       <div class="row">
@@ -101,11 +101,16 @@
       </div>
     </form>
     <details class="small" style="margin-top:12px">
-      <summary>推送内容格式</summary>
-      <p>以 JSON POST 发送，<code>event</code> 为 <code>need_verification</code>（需要人工验证）、<code>checkin_failed</code>（签到失败）或 <code>test</code>：</p>
-      <pre style="white-space:pre-wrap">{"event": "need_verification", "title": "NodeSeek 签到需要人工验证",
- "text": "完整的通知文本", "account": "账号名称", "message": "详细说明",
- "url": "管理页面访问地址"}</pre>
+      <summary>推送的事件</summary>
+      <ul>
+        <li>签到成功：账号、NodeSeek 用户、签到模式、获得鸡腿、当前鸡腿</li>
+        <li>今日已签到</li>
+        <li>签到失败：附带失败原因</li>
+        <li>登录已失效：需要在管理页面手动登录</li>
+        <li>签到需要人工验证：需要在 30 分钟内打开管理页面完成验证</li>
+        <li>日间浏览失败</li>
+        <li>签到服务出错</li>
+      </ul>
     </details>
   </section>
 </main>
@@ -219,7 +224,7 @@ function render() {
   // 设置表单只在首次加载时填充，避免覆盖正在编辑的内容
   if (!settingsLoaded) {
     const f = $('#settings-form');
-    f.webhook_url.value = s.settings.webhook_url;
+    f.discord_webhook_url.value = s.settings.discord_webhook_url;
     f.public_url.value = s.settings.public_url;
     settingsLoaded = true;
   }
@@ -295,7 +300,7 @@ $('#btn-abort').onclick = () => act(() => api('POST', '/api/verification/abort')
 
 function settingsBody() {
   const f = $('#settings-form');
-  return { webhook_url: f.webhook_url.value, public_url: f.public_url.value };
+  return { discord_webhook_url: f.discord_webhook_url.value, public_url: f.public_url.value };
 }
 $('#settings-form').addEventListener('submit', (e) => {
   e.preventDefault();

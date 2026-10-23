@@ -10,7 +10,13 @@ use std::{env, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local, NaiveTime, TimeDelta};
 
-use crate::{app::App, browser::ChromeConfig, store::Store, web::WebConfig};
+use crate::{
+    app::App,
+    browser::ChromeConfig,
+    notify::{Event, Notification},
+    store::Store,
+    web::WebConfig,
+};
 
 fn env_or(key: &str, default: &str) -> String {
     env::var(key)
@@ -54,8 +60,13 @@ async fn main() -> Result<()> {
         let app = app.clone();
         let path = data_dir.join("reading-schedule.json");
         async move {
-            if let Err(e) = reading::run(app, &path).await {
+            if let Err(e) = reading::run(app.clone(), &path).await {
                 tracing::error!("日间阅读调度停止：{e:#}");
+                app.notify(Notification::new(
+                    Event::ServiceError,
+                    format!("日间阅读调度停止：{e:#}"),
+                ))
+                .await;
             }
         }
     });

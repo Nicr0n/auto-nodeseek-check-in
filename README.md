@@ -48,28 +48,29 @@ systemctl enable --now nodeseek-checkin-update.timer
 签到时如果 Cloudflare 要求点击「Verify you are human」，程序不会自动点击，而是：
 
 1. 保持浏览器打开最多 30 分钟，管理页面上显示远程浏览器窗口；
-2. 推送 Webhook 通知（在管理页面的「通知」中填写地址）。
+2. 推送 Discord 通知（见下文）。
 
-在管理页面完成验证后，签到会自动继续。签到失败（包括登录失效）时也会推送通知。
+在管理页面完成验证后，签到会自动继续。
 
 NodeSeek 的跨域 fog 脚本会采集鼠标或触摸轨迹，页面打开约 10 秒后通过 `/edge-cgi/fog` WebSocket 获取计算题，完成 PoW 后向 `document.cookie` 写入有效期 1 天的 `fog` Cookie。这与站点 Service Worker 的虚拟 Cookie 是不同机制。签到时程序会通过 `xdotool` 在浏览器内容区域移动系统指针，等待 20 秒后由页面环境调用签到接口，保留站点原有的请求处理链路。遇到安全检查拦截时先刷新重试一次；仍未通过则显示远程浏览器窗口并发送通知，手动完成检查后程序会定期重试签到。Cloudflare 要求点击的验证仍需人工完成。
 
 Docker 镜像已包含 `xdotool`；直接运行二进制时，需要额外安装它，并确保 `DISPLAY` 指向 Chromium 使用的 X11 显示器。
 
-Webhook 以 JSON POST 发送：
+## Discord 通知
 
-```json
-{
-  "event": "need_verification",
-  "title": "NodeSeek 签到需要人工验证",
-  "text": "完整的通知文本，可直接转发",
-  "account": "账号名称",
-  "message": "详细说明",
-  "url": "管理页面访问地址"
-}
-```
+在 Discord 频道的「设置 → 整合 → Webhook」中新建 Webhook，复制地址（`https://discord.com/api/webhooks/...`）填到管理页面的「Discord 通知」中，点击「发送测试」确认能收到。填写「管理页面访问地址」后，通知标题会链接到管理页面。
 
-`event` 为 `need_verification`（需要人工验证）、`checkin_failed`（签到失败）或 `test`（测试）。
+每条通知是一个 embed，推送以下事件：
+
+| 事件 | 内容 |
+| --- | --- |
+| 签到成功 | 账号、NodeSeek 用户、签到模式、获得鸡腿、当前鸡腿 |
+| 今日已签到 | 账号、接口返回的消息 |
+| 签到失败 | 账号、失败原因（包括等待人工验证超时、安全检查拦截等） |
+| 登录已失效 | 账号、原因；需要在管理页面手动登录 |
+| 签到需要人工验证 | 账号、需要的操作；需要在 30 分钟内处理 |
+| 日间浏览失败 | 账号、原因（如登录失效、被验证拦截） |
+| 签到服务出错 | 后台任务意外停止 |
 
 ## 配置
 
